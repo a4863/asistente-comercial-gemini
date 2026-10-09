@@ -166,3 +166,36 @@ def test_reconcile_when_not_uncertain_returns_400(setup_test_environment) -> Non
     resp_recon = client.post(f"/api/drafts/actions/{action_id}/reconcile")
     assert resp_recon.status_code == 400
     assert "Solo se pueden reconciliar acciones en estado UNCERTAIN" in resp_recon.json()["detail"]
+
+
+def test_submit_blocked_on_uncertain_until_reconciled(setup_test_environment) -> None:
+    """Verifica que no se puede reintentar submit mientras la acción esté en UNCERTAIN."""
+    mock_imap = setup_test_environment
+    mock_imap.append_side_effect = socket.timeout("Fallo socket")
+
+    _create_sample_proposal("prop-block-test", ProposalStatus.ACCEPTED)
+
+    # Submit falla a UNCERTAIN
+    resp1 = client.post("/api/drafts/proposals/prop-block-test/submit")
+    assert resp1.status_code == 200
+    action_id = resp1.json()["id"]
+    assert resp1.json()["state"] == "uncertain"
+
+    # Submit subsiguiente bloqueado con 409
+    resp_blocked = client.post("/api/drafts/proposals/prop-block-test/submit")
+    assert resp_blocked.status_code == 409
+
+    # Reconciliación confirma ausencia -> FAILED_RETRYABLE
+    mock_imap.search_response = ("OK", [b""])
+    resp_recon = client.post(f"/api/drafts/actions/{action_id}/reconcile")
+    assert resp_recon.status_code == 200
+    assert resp_recon.json()["state"] == "failed_retryable"
+    assert resp_recon.json()["can_retry"] is True
+
+    # Ahora el submit sí está permitido como reintento
+    mock_imap.append_side_effect = None
+    mock_imap.append_response = ("OK", [b"[APPENDUID 1000 2000] OK"])
+    resp_retry = client.post("/api/drafts/proposals/prop-block-test/submit")
+    assert resp_retry.status_code == 200
+    assert resp_retry.json()["state"] == "created"
+    assert resp_retry.json()["imap_uid"] == "2000"
