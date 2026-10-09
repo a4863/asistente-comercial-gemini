@@ -14,6 +14,23 @@ class ProposalStatus(str, enum.Enum):
     REJECTED = "rejected"
 
 
+class VisualBadgeColor(str, enum.Enum):
+    GREEN = "green"    # Acción completada / creada / aceptada
+    BLUE = "blue"      # Preparada / planned / submitting
+    AMBER = "amber"    # Pendiente de aprobación / atención comercial
+    RED = "red"        # Error terminal / rechazada
+    GRAY = "gray"      # Histórico / inactivo
+    WARNING = "warning"# Estado incierto / requiere reconciliación
+
+
+class StatusVisualBadge(BaseModel):
+    """Metadatos para renderizado visual en la interfaz de Lovable."""
+    label: str
+    color: VisualBadgeColor
+    icon: str
+    description: str
+
+
 class DraftProposalRead(BaseModel):
     id: str
     source_message_id: str
@@ -25,6 +42,7 @@ class DraftProposalRead(BaseModel):
     created_at: datetime
     current_action_id: str | None = None
     current_action_state: DraftActionState | None = None
+    visual_badge: StatusVisualBadge
 
 
 class DraftReviewRequest(BaseModel):
@@ -45,3 +63,4 @@ class DraftActionRead(BaseModel):
     can_retry: bool
     is_uncertain: bool
     is_terminal: bool
+    visual_badge: StatusVisualBadge

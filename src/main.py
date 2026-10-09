@@ -3,6 +3,7 @@ from __future__ import annotations
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from src.api.dashboard_router import router as dashboard_router
 from src.api.drafts_router import router as drafts_router
 
 app = FastAPI(
@@ -27,6 +28,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+app.include_router(dashboard_router)
 app.include_router(drafts_router)
 
 

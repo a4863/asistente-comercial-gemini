@@ -10,6 +10,8 @@ from src.schemas.draft_schemas import (
     DraftProposalRead,
     DraftReviewRequest,
     ProposalStatus,
+    StatusVisualBadge,
+    VisualBadgeColor,
 )
 from src.services.imap_draft_service import IMAPClientProtocol, ImapDraftAppender
 
@@ -43,7 +45,68 @@ def set_imap_client_override(client: IMAPClientProtocol | None) -> None:
     _imap_client = client
 
 
+def build_proposal_visual_badge(status: ProposalStatus) -> StatusVisualBadge:
+    if status == ProposalStatus.NOT_REVIEWED:
+        return StatusVisualBadge(
+            label="Pendiente de Revisión",
+            color=VisualBadgeColor.AMBER,
+            icon="clock",
+            description="La propuesta de borrador requiere aprobación humana del comercial.",
+        )
+    if status == ProposalStatus.ACCEPTED:
+        return StatusVisualBadge(
+            label="Propuesta Aceptada",
+            color=VisualBadgeColor.GREEN,
+            icon="check-circle",
+            description="Revisada y aceptada. Lista para materializar en buzón de Outlook.",
+        )
+    return StatusVisualBadge(
+        label="Propuesta Rechazada",
+        color=VisualBadgeColor.RED,
+        icon="x-circle",
+        description="Descartada por el usuario comercial. No se ejecutará.",
+    )
+
+
+def build_action_visual_badge(state: DraftActionState) -> StatusVisualBadge:
+    if state == DraftActionState.CREATED:
+        return StatusVisualBadge(
+            label="Borrador en Outlook",
+            color=VisualBadgeColor.GREEN,
+            icon="mail-check",
+            description="Borrador depositado en 'Borradores Asistente'. Listo para revisión final y envío en Outlook.",
+        )
+    if state == DraftActionState.UNCERTAIN:
+        return StatusVisualBadge(
+            label="Advertencia: Incierto",
+            color=VisualBadgeColor.WARNING,
+            icon="alert-triangle",
+            description="Interrupción de red durante el guardado. Prohibido reintentar sin reconciliación previa.",
+        )
+    if state == DraftActionState.SUBMITTING:
+        return StatusVisualBadge(
+            label="Guardando en Buzón...",
+            color=VisualBadgeColor.BLUE,
+            icon="loader",
+            description="Transmitiendo mensaje mediante IMAP APPEND seguro.",
+        )
+    if state == DraftActionState.FAILED_RETRYABLE:
+        return StatusVisualBadge(
+            label="Fallo Temporal",
+            color=VisualBadgeColor.AMBER,
+            icon="refresh-cw",
+            description="Error de conexión temporal. El reintento seguro está habilitado.",
+        )
+    return StatusVisualBadge(
+        label="Error Terminal",
+        color=VisualBadgeColor.RED,
+        icon="alert-octagon",
+        description="Error no recuperable del servidor IMAP o buzón inexistente.",
+    )
+
+
 def _map_proposal_to_dto(proposal, action: Optional[EmailDraftAction]) -> DraftProposalRead:
+    badge = build_proposal_visual_badge(proposal.status)
     return DraftProposalRead(
         id=proposal.id,
         source_message_id=proposal.source_message_id,
@@ -55,10 +118,12 @@ def _map_proposal_to_dto(proposal, action: Optional[EmailDraftAction]) -> DraftP
         created_at=proposal.created_at,
         current_action_id=action.id if action else None,
         current_action_state=action.state if action else None,
+        visual_badge=badge,
     )
 
 
 def _map_action_to_dto(action: EmailDraftAction) -> DraftActionRead:
+    badge = build_action_visual_badge(action.state)
     return DraftActionRead(
         id=action.id,
         proposal_id=action.proposal_id,
@@ -72,6 +137,7 @@ def _map_action_to_dto(action: EmailDraftAction) -> DraftActionRead:
         can_retry=action.can_retry,
         is_uncertain=action.is_uncertain,
         is_terminal=action.is_terminal,
+        visual_badge=badge,
     )
 
 
@@ -80,7 +146,7 @@ def list_proposals(
     status_filter: Optional[ProposalStatus] = Query(None, alias="status"),
     repo: DraftRepository = Depends(get_draft_repository),
 ) -> List[DraftProposalRead]:
-    """Lista las propuestas de borrador con filtro opcional de estado."""
+    """Lista las propuestas de borrador con filtro opcional de estado y badges visuales."""
     proposals = repo.list_proposals(status_filter)
     result = []
     for prop in proposals:
@@ -94,7 +160,7 @@ def get_proposal(
     proposal_id: str,
     repo: DraftRepository = Depends(get_draft_repository),
 ) -> DraftProposalRead:
-    """Obtiene el detalle de una propuesta específica."""
+    """Obtiene el detalle de una propuesta específica con su badge visual."""
     proposal = repo.get_proposal(proposal_id)
     if not proposal:
         raise HTTPException(
@@ -199,7 +265,7 @@ def get_action_status(
     action_id: str,
     repo: DraftRepository = Depends(get_draft_repository),
 ) -> DraftActionRead:
-    """Consulta el estado técnico de una acción de borrador."""
+    """Consulta el estado técnico de una acción de borrador con metadatos visuales."""
     action = repo.get_action(action_id)
     if not action:
         raise HTTPException(
