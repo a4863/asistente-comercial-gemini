@@ -28,9 +28,9 @@ Centralizar y estructurar la operativa comercial diaria de un delegado comercial
 
 ### 1.3 Estado Actual Detectado y Brecha Técnica
 - **Completado según MF:** IMAP read-only (inbox/sent), reconstrucción de hilos, análisis IA, revisión humana, materialización de tareas/siguientes pasos, Google OAuth (calendario Alex Google) con creación verificada, snapshot MIME inmutable de borradores locales, invalidación/reemplazo auditable, base de datos SQLite con migraciones hasta `0011`.
-- **Fase 1 (Phase 6N-E) [COMPLETADA]:** Implementación del modelo `EmailDraftAction`, máquina de estados determinista (`submitting`, `created`, `uncertain`, `failed_retryable`, `failed_terminal`), servicio `ImapDraftAppender` con destino `'INBOX.Drafts.Borradores Asistente'`, flag `\Draft`, inyección de cabecera de idempotencia `X-Assistant-Draft-Id` y protocolo de reconciliación en modo `readonly=True`.
-- **Fase 2 [COMPLETADA]:** Exposición de endpoints REST en FastAPI (`src/api/drafts_router.py`) con DTOs Pydantic v2, persistencia transaccional y protección contra reintentos ciegos (`409 Conflict`).
-- **Fase 3 [COMPLETADA Y VERIFICADA]:** Suite End-to-End (`tests/test_e2e_complete_flow.py`), suite de regresión de invariantes de seguridad (`tests/test_security_invariants.py`) y script de despliegue local seguro (`src/run_local.py`) con bind exclusivo en `127.0.0.1`.
+- **Fase 1 (Phase 6N-E) [COMPLETADA Y FIRMADA]:** Implementación del modelo `EmailDraftAction`, máquina de estados determinista (`submitting`, `created`, `uncertain`, `failed_retryable`, `failed_terminal`), servicio `ImapDraftAppender` con destino `'INBOX.Drafts.Borradores Asistente'`, flag `\Draft`, inyección de cabecera de idempotencia `X-Assistant-Draft-Id` y protocolo de reconciliación en modo `readonly=True`.
+- **Fase 2 [COMPLETADA Y FIRMADA]:** Exposición de endpoints REST en FastAPI (`src/api/drafts_router.py`) con DTOs Pydantic v2, persistencia transaccional y protección contra reintentos ciegos (`409 Conflict`).
+- **Fase 3 [COMPLETADA, PROBADA Y VERIFICADA]:** Suite End-to-End (`tests/test_e2e_complete_flow.py`), suite de regresión de invariantes de seguridad (`tests/test_security_invariants.py`) y script de despliegue local seguro (`src/run_local.py`, `run_windows.bat`) con bind exclusivo en `127.0.0.1`.
 
 ---
 
@@ -66,16 +66,20 @@ Centralizar y estructurar la operativa comercial diaria de un delegado comercial
 
 ---
 
-## 4. Plan de Ejecución por Fases
+## 4. Plan de Ejecución por Fases y Cobertura de Pruebas
 
 - **Fase 0 (Completada):** Diagnóstico inicial, matriz de funcionalidades, especificación de invariantes y mapa de riesgos.
-- **Fase 1 (Completada - Phase 6N-E):** Implementación y aseguramiento del modelo `EmailDraftAction`, servicio de `IMAP APPEND` hacia `'INBOX.Drafts.Borradores Asistente'`, máquina de estados determinista y suite de pruebas unitarias/mockeada.
-- **Fase 2 (Completada):** Integración de persistencia y servicios de aplicación/API REST en FastAPI (`src/api/drafts_router.py`).
-- **Fase 3 (Completada y Verificada):** Pruebas End-to-End (E2E), verificación de cobertura integral, suite de regresión de seguridad (`tests/test_security_invariants.py`) y despliegue local seguro (`src/run_local.py`).
+- **Fase 1 (Completada - Phase 6N-E):** Implementación y aseguramiento del modelo `EmailDraftAction`, servicio `ImapDraftAppender` hacia `'INBOX.Drafts.Borradores Asistente'`, máquina de estados determinista y suite de pruebas unitarias (`tests/test_imap_draft_service.py`).
+- **Fase 2 (Completada):** Integración de persistencia y servicios de aplicación/API REST en FastAPI (`src/api/drafts_router.py`) con suite de tests de API (`tests/test_api_drafts.py`).
+- **Fase 3 (Completada y Verificada):** 
+  - Pruebas E2E de ciclo comercial completo CP-E2E-01 a CP-E2E-07 (`tests/test_e2e_complete_flow.py`).
+  - Suite de regresión y blindaje de invariantes de seguridad: Cero SMTP, Local-Only 127.0.0.1 y Keyring (`tests/test_security_invariants.py`).
+  - Script de arranque local y seguro para Windows (`src/run_local.py`, `run_windows.bat`).
 - **Fase 4 (Siguiente Hito):** Integración con la interfaz web local desacoplada (Lovable UI).
 
 ---
 
 ## 5. Declaración de Cierre de Fase 0, 1, 2 y 3
 
-Todas las fases han sido ejecutadas, validadas con 4 suites de pruebas (unitarias, API, E2E y regresión de seguridad) y verificadas bajo las directrices estrictas de Cero SMTP y Local-Only (`127.0.0.1`).
+Todas las fases backend y de aseguramiento han sido ejecutadas, validadas con 4 suites completas de pruebas (unitarias, API, E2E y regresión de seguridad) y verificadas bajo las directrices estrictas de Cero SMTP y Local-Only (`127.0.0.1`).
+El backend se declara completamente estabilizado y listo para la conexión con la interfaz de usuario.
