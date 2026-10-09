@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import inspect
-import sys
 from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
@@ -9,13 +8,12 @@ from fastapi.testclient import TestClient
 from src.main import app
 from src.run_local import verify_security_invariants, LOCAL_HOST
 from src.services import imap_draft_service
-from src.api import drafts_router
 
 client = TestClient(app)
 
 
 # =========================================================================
-# 1. Regresión de Invariante: Cero SMTP (Prohibición Absoluta de Envío)
+# 1. Regresión e Invariante: Cero SMTP (Prohibición Absoluta de Envío)
 # =========================================================================
 
 def test_invariant_zero_smtp_no_smtplib_imports() -> None:
@@ -36,9 +34,24 @@ def test_invariant_zero_smtp_no_smtplib_imports() -> None:
             )
 
 
+def test_invariant_zero_smtp_no_smtp_ports_in_source() -> None:
+    """Verifica que en el código de src/ no se configure conexión a puertos SMTP clásicos (25, 465, 587)."""
+    src_dir = Path(__file__).resolve().parent.parent / "src"
+    py_files = list(src_dir.rglob("*.py"))
+
+    forbidden_ports = ["port=25", "port = 25", "port=587", "port = 587", "port=465", "port = 465"]
+
+    for py_file in py_files:
+        content = py_file.read_text(encoding="utf-8")
+        for forbidden in forbidden_ports:
+            assert forbidden not in content, (
+                f"Violación de seguridad: Puerto SMTP detectado en {py_file.name}: {forbidden}."
+            )
+
+
 def test_invariant_zero_smtp_no_send_endpoints_in_api() -> None:
     """Verifica que la API no exponga endpoints ni rutas con semántica de envío de correo."""
-    forbidden_terms = ["/send", "/send-email", "/enviar"]
+    forbidden_terms = ["/send", "/send-email", "/enviar", "/mail/send"]
 
     for route in app.routes:
         path = getattr(route, "path", "")
@@ -56,7 +69,7 @@ def test_invariant_zero_smtp_destination_folder_and_draft_flag() -> None:
 
 
 # =========================================================================
-# 2. Regresión de Invariante: Local-Only (127.0.0.1)
+# 2. Regresión e Invariante: Local-Only (127.0.0.1)
 # =========================================================================
 
 def test_invariant_local_only_binding_configuration() -> None:
@@ -104,7 +117,7 @@ def test_invariant_local_only_health_endpoint() -> None:
 
 
 # =========================================================================
-# 3. Regresión de Invariante: Credenciales y Sanitización de Secretos (Keyring)
+# 3. Regresión e Invariante: Credenciales y Sanitización de Secretos (Keyring)
 # =========================================================================
 
 def test_invariant_no_hardcoded_passwords_in_source() -> None:
@@ -130,7 +143,7 @@ def test_invariant_no_hardcoded_passwords_in_source() -> None:
             if cleaned.startswith("#") or ":" in cleaned:
                 continue
             for pattern in forbidden_patterns:
-                if pattern in cleaned and 'os.getenv' not in cleaned and 'keyring' not in cleaned:
+                if pattern in cleaned and "os.getenv" not in cleaned and "keyring" not in cleaned:
                     val = cleaned.split(pattern)[1].strip()
                     assert val in ('none', '""', "''", 'none,', '"" ,', "'' ,"), (
                         f"Posible credencial en texto plano en {py_file.name}:{idx}: {line.strip()}"
