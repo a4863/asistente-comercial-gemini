@@ -9,7 +9,7 @@ import socket
 from datetime import datetime, timezone
 from typing import Any, Protocol
 
-from src.domain.draft_action import DraftActionState, EmailDraftAction
+from src.domain.draft_action import DraftActionState, EmailDraftAction, InvalidStateTransitionError
 
 DRAFTS_FOLDER_TARGET = "INBOX.Drafts.Borradores Asistente"
 IDEMPOTENCY_HEADER = "X-Assistant-Draft-Id"
@@ -40,6 +40,7 @@ class ImapDraftAppender:
     """Servicio para ejecutar IMAP APPEND idempotente a la carpeta de borradores.
 
     Invariante: Cero SMTP. Solo interacción local/IMAP en modo append y búsqueda de reconciliación.
+    Previene de forma estricta los reintentos ciegos tras timeouts o ambigüedades.
     """
 
     def __init__(self, target_folder: str = DRAFTS_FOLDER_TARGET) -> None:
@@ -61,11 +62,12 @@ class ImapDraftAppender:
         action: EmailDraftAction,
         imap_client: IMAPClientProtocol,
     ) -> EmailDraftAction:
-        """Ejecuta el APPEND en el servidor IMAP y gestiona las transiciones de estado."""
-        if action.state not in (DraftActionState.SUBMITTING, DraftActionState.FAILED_RETRYABLE):
-            raise ValueError(
-                f"No se puede ejecutar append_draft para una acción en estado {action.state.value}"
-            )
+        """Ejecuta el APPEND en el servidor IMAP y gestiona las transiciones de estado.
+
+        Prohíbe reintentos si la acción está en estado UNCERTAIN.
+        """
+        # Validación de guarda: no se permite APPEND ciego si está en UNCERTAIN o terminal
+        action.assert_can_submit()
 
         if action.state != DraftActionState.SUBMITTING:
             action.transition_to(DraftActionState.SUBMITTING)
@@ -98,15 +100,17 @@ class ImapDraftAppender:
                     error_message=f"Servidor IMAP devolvió estado no OK: {status}. Respuesta: {resp_text}",
                 )
 
-        except (socket.timeout, TimeoutError, ConnectionResetError) as err:
+        except (socket.timeout, TimeoutError, ConnectionResetError, BrokenPipeError) as err:
+            # Ambigüedad / Timeout tras iniciar transmisión: pasa obligatoriamente a UNCERTAIN
             action.transition_to(
                 DraftActionState.UNCERTAIN,
-                error_message=f"Interrupción de red durante APPEND: {type(err).__name__} - {err}",
+                error_message=f"Interrupción de red durante APPEND (incertidumbre de creación): {type(err).__name__} - {err}",
             )
-        except (socket.gaierror, ConnectionRefusedError, OSError) as err:
+        except (socket.gaierror, ConnectionRefusedError) as err:
+            # Fallo previo de resolución de host o socket no alcanzado: error recuperable
             action.transition_to(
                 DraftActionState.FAILED_RETRYABLE,
-                error_message=f"Error transitorio de conexión previo/durante socket: {type(err).__name__} - {err}",
+                error_message=f"Error transitorio de conexión previo a transmisión: {type(err).__name__} - {err}",
             )
         except imaplib.IMAP4.error as err:
             action.transition_to(
@@ -126,7 +130,12 @@ class ImapDraftAppender:
         action: EmailDraftAction,
         imap_client: IMAPClientProtocol,
     ) -> EmailDraftAction:
-        """Reconcilia una acción en estado UNCERTAIN consultando el buzón en modo read-only."""
+        """Reconcilia una acción en estado UNCERTAIN consultando el buzón en modo read-only.
+
+        - Si encuentra el mensaje con el token de idempotencia -> CREATED.
+        - Si confirma con certeza que no existe en el buzón -> FAILED_RETRYABLE.
+        - Si falla la consulta o hay error de conexión -> Permanece estrictamente en UNCERTAIN.
+        """
         if action.state != DraftActionState.UNCERTAIN:
             return action
 
@@ -135,28 +144,38 @@ class ImapDraftAppender:
         try:
             status, _ = imap_client.select(folder_cmd, readonly=True)
             if status != "OK":
+                action.error_message = (
+                    f"{action.error_message or ''} | Reconciliación: no se pudo seleccionar carpeta en readonly (estado {status})."
+                ).strip(" |")
                 return action
 
             search_criteria = f'HEADER {IDEMPOTENCY_HEADER} "{action.idempotency_token}"'
             search_status, search_data = imap_client.search(None, search_criteria)
 
-            if search_status == "OK" and search_data and search_data[0].strip():
-                uids = search_data[0].decode("ascii", errors="replace").split()
-                found_uid = uids[-1] if uids else None
-                action.transition_to(
-                    DraftActionState.CREATED,
-                    imap_uid=found_uid,
-                )
+            if search_status == "OK":
+                if search_data and search_data[0].strip():
+                    uids = search_data[0].decode("ascii", errors="replace").split()
+                    found_uid = uids[-1] if uids else None
+                    action.transition_to(
+                        DraftActionState.CREATED,
+                        imap_uid=found_uid,
+                    )
+                else:
+                    # Búsqueda OK y sin resultados: se confirma positivamente que no se creó
+                    action.transition_to(
+                        DraftActionState.FAILED_RETRYABLE,
+                        error_message="Reconciliación exitosa: se confirmó ausencia remota del borrador tras incertidumbre.",
+                    )
             else:
-                action.transition_to(
-                    DraftActionState.FAILED_RETRYABLE,
-                    error_message="Reconciliación: no se encontró borrador remoto tras incertidumbre.",
-                )
+                action.error_message = (
+                    f"{action.error_message or ''} | Reconciliación SEARCH falló con estado {search_status}."
+                ).strip(" |")
+
         except Exception as err:
-            # Si falla la búsqueda de reconciliación, permanece en UNCERTAIN
+            # En caso de fallo de red durante reconciliación, permanece estrictamente en UNCERTAIN
             action.error_message = (
-                f"{action.error_message or ''} | Fallo durante reconciliación: {err}".strip(" |")
-            )
+                f"{action.error_message or ''} | Fallo durante intento de reconciliación: {type(err).__name__} - {err}"
+            ).strip(" |")
 
         return action
 

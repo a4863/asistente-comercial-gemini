@@ -68,7 +68,26 @@ class EmailDraftAction:
 
     @property
     def can_retry(self) -> bool:
+        """Indica si la acción puede ser reintentada directamente.
+
+        NUNCA es True en estado UNCERTAIN para prevenir reintentos automáticos a ciegas.
+        """
         return self.state == DraftActionState.FAILED_RETRYABLE
+
+    def assert_can_submit(self) -> None:
+        """Verifica que la acción esté en un estado válido para ejecución/reintento.
+
+        Prohíbe terminantemente la ejecución directa en estado UNCERTAIN o terminal.
+        """
+        if self.state == DraftActionState.UNCERTAIN:
+            raise InvalidStateTransitionError(
+                "La acción está en estado UNCERTAIN. No se permite reintento automático ciego; "
+                "debe reconciliarse en modo solo lectura antes de cualquier reintento."
+            )
+        if self.state not in (DraftActionState.SUBMITTING, DraftActionState.FAILED_RETRYABLE):
+            raise InvalidStateTransitionError(
+                f"No se puede enviar acción en estado {self.state.value}."
+            )
 
     def transition_to(
         self,
