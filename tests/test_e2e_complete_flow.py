@@ -33,7 +33,7 @@ def clean_environment():
 
 
 def test_e2e_full_commercial_pipeline(clean_environment: MockIMAPClient) -> None:
-    """Flujo E2E Completo:
+    r"""Flujo E2E Completo:
 
     1. Ingesta simulada de correo entrante IMAP (read-only).
     2. Extracción/Inferencia IA produciendo propuesta de borrador RFC 822 en estado not_reviewed.
