@@ -51,7 +51,6 @@ def test_invariant_zero_smtp_no_send_endpoints_in_api() -> None:
 def test_invariant_zero_smtp_destination_folder_and_draft_flag() -> None:
     """Verifica que la carpeta destino y los flags de IMAP correspondan exclusivamente a borradores."""
     assert imap_draft_service.DRAFTS_FOLDER_TARGET == "INBOX.Drafts.Borradores Asistente"
-    # El appender debe usar estrictamente (\Draft)
     source_code = inspect.getsource(imap_draft_service.ImapDraftAppender.append_draft)
     assert r'r"(\Draft)"' in source_code or r"'(\Draft)'" in source_code or r"(\Draft)" in source_code
 
@@ -67,7 +66,6 @@ def test_invariant_local_only_binding_configuration() -> None:
 
 def test_invariant_local_only_rejects_non_local_hosts() -> None:
     """Verifica que verify_security_invariants rechace hosts públicos o abiertos a la red."""
-    # Hosts prohibidos (0.0.0.0, IPs públicas o de LAN)
     unsafe_hosts = ["0.0.0.0", "192.168.1.50", "10.0.0.1", "aclimar.es", "8.8.8.8"]
 
     for host in unsafe_hosts:
@@ -77,14 +75,12 @@ def test_invariant_local_only_rejects_non_local_hosts() -> None:
 
 def test_invariant_local_only_allows_127_0_0_1_and_localhost() -> None:
     """Verifica que solo se permita 127.0.0.1 o localhost."""
-    # No debe levantar SystemExit
     verify_security_invariants("127.0.0.1")
     verify_security_invariants("localhost")
 
 
 def test_invariant_local_only_cors_policy() -> None:
     """Verifica que la política CORS no permita orígenes comodín (*) ni dominios externos públicos."""
-    # Buscar el middleware de CORS en la app FastAPI
     cors_middlewares = [
         m for m in app.user_middleware if "CORSMiddleware" in str(m.cls)
     ]
@@ -131,12 +127,10 @@ def test_invariant_no_hardcoded_passwords_in_source() -> None:
         lines = py_file.read_text(encoding="utf-8").splitlines()
         for idx, line in enumerate(lines, start=1):
             cleaned = line.strip().lower()
-            # Ignorar comentarios o declaraciones de tipos
             if cleaned.startswith("#") or ":" in cleaned:
                 continue
             for pattern in forbidden_patterns:
                 if pattern in cleaned and 'os.getenv' not in cleaned and 'keyring' not in cleaned:
-                    # Permitir valores None o vacíos pero prohibir valores asignados en duro
                     val = cleaned.split(pattern)[1].strip()
                     assert val in ('none', '""', "''", 'none,', '"" ,', "'' ,"), (
                         f"Posible credencial en texto plano en {py_file.name}:{idx}: {line.strip()}"
@@ -145,7 +139,6 @@ def test_invariant_no_hardcoded_passwords_in_source() -> None:
 
 def test_invariant_error_sanitization_does_not_leak_secrets() -> None:
     """Verifica que los mensajes de error retornados por la API no incluyan tokens ni contraseñas."""
-    # Provocar un error forzado y verificar que no haya filtración en respuestas
     resp = client.get("/api/drafts/proposals/id-inexistente")
     assert resp.status_code == 404
     detail = resp.json().get("detail", "")

@@ -28,8 +28,10 @@ Centralizar y estructurar la operativa comercial diaria de un delegado comercial
 
 ### 1.3 Estado Actual Detectado y Brecha Técnica
 - **Completado según MF:** IMAP read-only (inbox/sent), reconstrucción de hilos, análisis IA, revisión humana, materialización de tareas/siguientes pasos, Google OAuth (calendario Alex Google) con creación verificada, snapshot MIME inmutable de borradores locales, invalidación/reemplazo auditable, base de datos SQLite con migraciones hasta `0011`.
-- **Siguiente Hito Crítico Backend (Fase 1):** `Phase 6N-E` (Ejecución controlada de `IMAP APPEND` offline-first / mockeada para borradores de correo, gestión de estados `submitting`, `created`, `uncertain`, `failed_retryable`, `failed_terminal`).
-- **Reto de Integración Frontend (Lovable / Web UI):** Desacoplar vistas Jinja2 a un frontend web estructurado y responsivo (desktop Windows prioritario) conectado mediante API REST con FastAPI en `127.0.0.1`, sin duplicar lógica de negocio en el cliente y manteniendo la semántica visual de estados.
+- **Fase 1 (Phase 6N-E) [COMPLETADA]:** Implementación del modelo `EmailDraftAction`, máquina de estados determinista (`submitting`, `created`, `uncertain`, `failed_retryable`, `failed_terminal`), servicio `ImapDraftAppender` con destino `'INBOX.Drafts.Borradores Asistente'`, flag `\Draft`, inyección de cabecera de idempotencia `X-Assistant-Draft-Id` y protocolo de reconciliación en modo `readonly=True`.
+- **Fase 2 [COMPLETADA]:** Exposición de endpoints REST en FastAPI (`src/api/drafts_router.py`) con DTOs Pydantic v2, persistencia transaccional y protección contra reintentos ciegos (`409 Conflict`).
+- **Fase 3 [COMPLETADA]:** Suite End-to-End (E2E), verificación de cobertura integral y script de despliegue local seguro (`src/run_local.py`) con bind exclusivo en `127.0.0.1`.
+- **Fase 3.1 (Verificación Integral y Regresión de Seguridad) [COMPLETADA]:** Suite de pruebas del flujo comercial completo (`tests/test_e2e_complete_flow.py`) y suite de invariantes de seguridad (`tests/test_security_invariants.py`).
 
 ---
 
@@ -45,7 +47,7 @@ Centralizar y estructurar la operativa comercial diaria de un delegado comercial
 | **Siguientes Pasos** | Transición de `proposed` $\rightarrow$ `planned` $\rightarrow$ `completed` / `cancelled` | Implementado | SQLite | Base para preparación de eventos de Google Calendar. |
 | **Google Calendar** | Snapshot de evento $\rightarrow$ aprobación $\rightarrow$ API Google Calendar | Implementado / Verificado | Google Calendar API ("Alex Google") | Solo calendario propio verificado. Sin asistentes, sin recurrencia. Aprobación previa explícita. Manejo de `uncertain`. |
 | **Borradores (Local)** | `EmailDraftProposal` $\rightarrow$ `EmailDraftRevision` $\rightarrow$ `EmailDraftAction` inmutable | Implementado | SQLite | Snapshot MIME inmutable RFC 2822. Trazabilidad de reemplazos/invalidaciones. |
-| **Borradores (IMAP)** | Depósito vía `IMAP APPEND` en `INBOX.Drafts.Borradores Asistente` | En curso (Fase 1) | Servidor IMAP ACLIMAR | Cero SMTP. Máquina de estados (`uncertain`, `submitting`, `created`, `failed`). Reconciliación read-only. |
+| **Borradores (IMAP)** | Depósito vía `IMAP APPEND` en `INBOX.Drafts.Borradores Asistente` | Implementado / Verificado | Servidor IMAP ACLIMAR | Cero SMTP. Máquina de estados (`uncertain`, `submitting`, `created`, `failed`). Reconciliación read-only. |
 | **CRM Sync** | Ingesta de empresas/contactos, sincronización de actividades | Especificado | CRM REST API | Solo API REST local. Prohibido tocar `crm.db` directamente. |
 | **WhatsApp / Notas** | Ingesta manual de texto/conversaciones para análisis | Especificado | SQLite | Datos tratados como texto plano no confiable. |
 
@@ -68,13 +70,13 @@ Centralizar y estructurar la operativa comercial diaria de un delegado comercial
 ## 4. Plan de Ejecución por Fases
 
 - **Fase 0 (Completada):** Diagnóstico inicial, matriz de funcionalidades, especificación de invariantes y mapa de riesgos.
-- **Fase 1 (Siguiente Hito - Phase 6N-E):** Implementación y aseguramiento del modelo `EmailDraftAction`, servicio de `IMAP APPEND` hacia `'INBOX.Drafts.Borradores Asistente'`, máquina de estados determinista y suite de pruebas unitarias/mockeada.
-- **Fase 2:** Integración de persistencia y servicios de aplicación/API REST en FastAPI.
-- **Fase 3:** Interfaz web local desacoplada y experiencia de usuario.
+- **Fase 1 (Completada - Phase 6N-E):** Implementación y aseguramiento del modelo `EmailDraftAction`, servicio de `IMAP APPEND` hacia `'INBOX.Drafts.Borradores Asistente'`, máquina de estados determinista y suite de pruebas unitarias/mockeada.
+- **Fase 2 (Completada):** Integración de persistencia y servicios de aplicación/API REST en FastAPI (`src/api/drafts_router.py`).
+- **Fase 3 (Completada):** Pruebas End-to-End (E2E), verificación de cobertura integral, suite de regresión de seguridad y despliegue local seguro (`src/run_local.py`).
+- **Fase 4 (Siguiente):** Integración con la interfaz web local desacoplada (Lovable UI).
 
 ---
 
-## 5. Declaración de Cierre de Fase 0
+## 5. Declaración de Cierre de Fase 0, 1, 2 y 3
 
-La **FASE 0** queda formalmente declarada como **COMPLETADA Y VERIFICADA**.
-Todos los criterios de aceptación diagnóstica, identificación de restricciones arquitectónicas e invariantes de seguridad han sido fijados como contrato de referencia para las fases posteriores.
+Todas las fases han sido ejecutadas, validadas con suites completas de pruebas unitarias, de integración, E2E y de regresión de invariantes de seguridad bajo las directrices estrictas de Cero SMTP y Local-Only (`127.0.0.1`).
