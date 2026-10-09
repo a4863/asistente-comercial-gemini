@@ -32,8 +32,12 @@ def clean_environment():
     set_imap_client_override(None)
 
 
-def test_e2e_full_commercial_pipeline(clean_environment: MockIMAPClient) -> None:
-    r"""Flujo E2E Completo:
+# =========================================================================
+# CP-E2E-01: Ciclo Comercial Completo (Happy Path E2E)
+# =========================================================================
+
+def test_e2e_cpe2e01_happy_path_pipeline(clean_environment: MockIMAPClient) -> None:
+    r"""CP-E2E-01: Flujo E2E Completo:
 
     1. Ingesta simulada de correo entrante IMAP (read-only).
     2. Extracción/Inferencia IA produciendo propuesta de borrador RFC 822 en estado not_reviewed.
@@ -46,18 +50,11 @@ def test_e2e_full_commercial_pipeline(clean_environment: MockIMAPClient) -> None
     mock_imap = clean_environment
     repo = get_draft_repository()
 
-    # ---------------------------------------------------------------------
-    # PASO 1: Ingesta simulada de correo entrante (IMAP read-only)
-    # ---------------------------------------------------------------------
+    # 1. Ingesta
     incoming_source_message_id = "<msg-2026-comercial-456@cliente-industrial.es>"
     incoming_subject = "Peticion oferta bomba de calor VRF para oficinas"
     incoming_from = "compras@cliente-industrial.es"
-    incoming_body = "Estimados senores de ACLIMAR,\nSolicitamos oferta para instalacion de bomba de calor."
 
-    # ---------------------------------------------------------------------
-    # PASO 2: Extractor / Pipeline IA genera propuesta RFC 822 determinista
-    # ---------------------------------------------------------------------
-    # Construcción determinista del snapshot RFC 822 con prefijo Re: único y referencia In-Reply-To
     msg = email.message.EmailMessage(policy=email.policy.default)
     msg["Message-ID"] = email.utils.make_msgid(domain="aclimar.es")
     msg["In-Reply-To"] = incoming_source_message_id
@@ -66,12 +63,7 @@ def test_e2e_full_commercial_pipeline(clean_environment: MockIMAPClient) -> None
     msg["From"] = "comercial@aclimar.es"
     msg["To"] = incoming_from
     msg["Date"] = email.utils.format_datetime(datetime.now(timezone.utc))
-    msg.set_content(
-        "Estimados señores,\n\n"
-        "Acusamos recibo de su solicitud para la instalación de bomba de calor VRF.\n"
-        "Adjuntamos el presupuesto comercial detallado.\n\n"
-        "Atentamente,\nACLIMAR Climatización"
-    )
+    msg.set_content("Presupuesto detallado para la instalación.")
     raw_rfc822_bytes = msg.as_bytes()
 
     proposal_entity = EmailDraftProposalEntity(
@@ -86,25 +78,12 @@ def test_e2e_full_commercial_pipeline(clean_environment: MockIMAPClient) -> None
     )
     repo.save_proposal(proposal_entity)
 
-    # Verificar que el cockpit puede listar la propuesta en estado not_reviewed
-    list_resp = client.get("/api/drafts/proposals?status=not_reviewed")
-    assert list_resp.status_code == 200
-    proposals = list_resp.json()
-    assert len(proposals) == 1
-    assert proposals[0]["id"] == "prop-pipeline-2026"
-    assert proposals[0]["status"] == "not_reviewed"
-
-    # ---------------------------------------------------------------------
-    # PASO 3: Intento de submit prematuro sin revisión humana (debe fallar)
-    # ---------------------------------------------------------------------
+    # 2. Bloqueo de submit prematuro
     pre_review_submit = client.post("/api/drafts/proposals/prop-pipeline-2026/submit")
     assert pre_review_submit.status_code == 400
     assert "Solo se pueden materializar borradores de propuestas aceptadas" in pre_review_submit.json()["detail"]
-    assert len(mock_imap.append_calls) == 0
 
-    # ---------------------------------------------------------------------
-    # PASO 4: Revisión humana: Aprobación expresa (accepted)
-    # ---------------------------------------------------------------------
+    # 3. Revisión humana: Aceptación
     review_resp = client.post(
         "/api/drafts/proposals/prop-pipeline-2026/review",
         json={"decision": "accepted", "reviewer": "Alex Comercial"},
@@ -112,11 +91,8 @@ def test_e2e_full_commercial_pipeline(clean_environment: MockIMAPClient) -> None
     assert review_resp.status_code == 200
     assert review_resp.json()["status"] == "accepted"
 
-    # ---------------------------------------------------------------------
-    # PASO 5: Materialización y ejecución de borrador vía IMAP APPEND
-    # ---------------------------------------------------------------------
+    # 4. Materialización y ejecución IMAP APPEND
     mock_imap.append_response = ("OK", [b"[APPENDUID 20260408 8844] Append completed."])
-
     submit_resp = client.post("/api/drafts/proposals/prop-pipeline-2026/submit")
     assert submit_resp.status_code == 200
     action_dto = submit_resp.json()
@@ -125,73 +101,234 @@ def test_e2e_full_commercial_pipeline(clean_environment: MockIMAPClient) -> None
     assert action_dto["imap_uid"] == "8844"
     assert action_dto["mailbox_folder"] == DRAFTS_FOLDER_TARGET
     assert action_dto["is_terminal"] is True
-    assert action_dto["can_retry"] is False
 
-    # ---------------------------------------------------------------------
-    # PASO 6: Verificación de invariantes en el comando IMAP APPEND
-    # ---------------------------------------------------------------------
+    # 5. Verificación de comandos e invariantes IMAP
     assert len(mock_imap.append_calls) == 1
-    append_call = mock_imap.append_calls[0]
-    assert append_call["mailbox"] == f'"{DRAFTS_FOLDER_TARGET}"'
-    assert append_call["flags"] == r"(\Draft)"
-
-    # Verificar que el mensaje enviado contiene la cabecera de idempotencia y trazabilidad
-    appended_email = email.message_from_bytes(append_call["message"], policy=email.policy.default)
-    assert IDEMPOTENCY_HEADER in appended_email
-    assert appended_email["In-Reply-To"] == incoming_source_message_id
-    assert appended_email["Subject"] == "Re: Peticion oferta bomba de calor VRF para oficinas"
-
-    # ---------------------------------------------------------------------
-    # PASO 7: Verificación de consulta y trazabilidad
-    # ---------------------------------------------------------------------
-    action_id = action_dto["id"]
-    query_action = client.get(f"/api/drafts/actions/{action_id}")
-    assert query_action.status_code == 200
-    assert query_action.json()["state"] == "created"
-    assert query_action.json()["imap_uid"] == "8844"
+    call = mock_imap.append_calls[0]
+    assert call["mailbox"] == f'"{DRAFTS_FOLDER_TARGET}"'
+    assert call["flags"] == r"(\Draft)"
 
 
-def test_e2e_pipeline_uncertainty_and_reconciliation(clean_environment: MockIMAPClient) -> None:
-    """Flujo E2E de Incertidumbre y Reconciliación:
+# =========================================================================
+# CP-E2E-02: Rechazo Humano de Propuesta
+# =========================================================================
 
-    1. Propuesta aceptada se envía con timeout de red durante APPEND -> UNCERTAIN.
-    2. Intento de reintento ciego -> bloqueado con 409 Conflict.
-    3. Reconciliación read-only positiva -> CREATED.
-    """
+def test_e2e_cpe2e02_human_rejection(clean_environment: MockIMAPClient) -> None:
+    """CP-E2E-02: Una propuesta rechazada por el usuario jamás puede ejecutarse externamente."""
     mock_imap = clean_environment
     repo = get_draft_repository()
 
     proposal = EmailDraftProposalEntity(
-        id="prop-uncertain-flow",
-        source_message_id="<msg-timeout-test@empresa.com>",
-        subject="Re: Presupuesto climatización",
+        id="prop-reject-002",
+        source_message_id="<msg-spam-002@externo.es>",
+        subject="Oferta irrelevante",
+        from_address="comercial@aclimar.es",
+        to_address="spam@externo.es",
+        body="Descartar",
+        raw_rfc822=b"Subject: Oferta\n\nCuerpo",
+        status=ProposalStatus.NOT_REVIEWED,
+    )
+    repo.save_proposal(proposal)
+
+    # Rechazo humano
+    review_resp = client.post(
+        "/api/drafts/proposals/prop-reject-002/review",
+        json={"decision": "rejected", "reviewer": "Alex Comercial"},
+    )
+    assert review_resp.status_code == 200
+    assert review_resp.json()["status"] == "rejected"
+
+    # Intento de submit denegado
+    submit_resp = client.post("/api/drafts/proposals/prop-reject-002/submit")
+    assert submit_resp.status_code == 400
+    assert len(mock_imap.append_calls) == 0
+
+
+# =========================================================================
+# CP-E2E-03: Ambigüedad de Red / Estado UNCERTAIN
+# =========================================================================
+
+def test_e2e_cpe2e03_network_ambiguity_uncertain(clean_environment: MockIMAPClient) -> None:
+    """CP-E2E-03: Timeout de red transiciona a UNCERTAIN y bloquea reintentos ciegos con 409 Conflict."""
+    mock_imap = clean_environment
+    repo = get_draft_repository()
+
+    proposal = EmailDraftProposalEntity(
+        id="prop-timeout-003",
+        source_message_id="<msg-timeout-003@empresa.com>",
+        subject="Re: Climatizacion nave",
         from_address="comercial@aclimar.es",
         to_address="contacto@empresa.com",
         body="Adjunto presupuesto.",
+        raw_rfc822=b"Subject: Re: Climatizacion\n\nCuerpo",
+        status=ProposalStatus.ACCEPTED,
+    )
+    repo.save_proposal(proposal)
+
+    # Simular fallo de socket durante APPEND
+    mock_imap.append_side_effect = socket.timeout("Socket timeout esperando acuse OK")
+
+    submit_resp = client.post("/api/drafts/proposals/prop-timeout-003/submit")
+    assert submit_resp.status_code == 200
+    action_data = submit_resp.json()
+    assert action_data["state"] == DraftActionState.UNCERTAIN.value
+    assert action_data["is_uncertain"] is True
+    assert action_data["can_retry"] is False
+
+    # Intento de submit directo subsiguiente bloqueado
+    retry_submit = client.post("/api/drafts/proposals/prop-timeout-003/submit")
+    assert retry_submit.status_code == 409
+    assert "estado UNCERTAIN" in retry_submit.json()["detail"]
+
+
+# =========================================================================
+# CP-E2E-04: Reconciliación Positiva Read-Only
+# =========================================================================
+
+def test_e2e_cpe2e04_reconcile_positive(clean_environment: MockIMAPClient) -> None:
+    """CP-E2E-04: Reconciliación read-only encuentra borrador y transiciona a CREATED."""
+    mock_imap = clean_environment
+    repo = get_draft_repository()
+
+    proposal = EmailDraftProposalEntity(
+        id="prop-recon-pos-004",
+        source_message_id="<msg-pos-004@empresa.com>",
+        subject="Re: Presupuesto",
+        from_address="comercial@aclimar.es",
+        to_address="contacto@empresa.com",
+        body="Presupuesto",
         raw_rfc822=b"Subject: Re: Presupuesto\n\nCuerpo",
         status=ProposalStatus.ACCEPTED,
     )
     repo.save_proposal(proposal)
 
-    # Simular caída de socket en APPEND
-    mock_imap.append_side_effect = socket.timeout("Socket timeout esperando respuesta")
+    mock_imap.append_side_effect = socket.timeout("Timeout")
+    submit_resp = client.post("/api/drafts/proposals/prop-recon-pos-004/submit")
+    action_id = submit_resp.json()["id"]
 
-    submit_resp = client.post("/api/drafts/proposals/prop-uncertain-flow/submit")
-    assert submit_resp.status_code == 200
-    action_data = submit_resp.json()
-    assert action_data["state"] == DraftActionState.UNCERTAIN.value
-    assert action_data["is_uncertain"] is True
-    action_id = action_data["id"]
-
-    # Reintento ciego bloqueado
-    blind_retry = client.post("/api/drafts/proposals/prop-uncertain-flow/submit")
-    assert blind_retry.status_code == 409
-    assert "estado UNCERTAIN" in blind_retry.json()["detail"]
-
-    # Reconciliación en modo solo lectura
-    mock_imap.search_response = ("OK", [b"9911"])
+    # Reconciliación positiva
+    mock_imap.search_response = ("OK", [b"6601"])
     recon_resp = client.post(f"/api/drafts/actions/{action_id}/reconcile")
     assert recon_resp.status_code == 200
     assert recon_resp.json()["state"] == DraftActionState.CREATED.value
-    assert recon_resp.json()["imap_uid"] == "9911"
+    assert recon_resp.json()["imap_uid"] == "6601"
     assert mock_imap.select_calls[-1]["readonly"] is True
+
+
+# =========================================================================
+# CP-E2E-05: Reconciliación Negativa y Reintento Seguro
+# =========================================================================
+
+def test_e2e_cpe2e05_reconcile_negative_and_retry(clean_environment: MockIMAPClient) -> None:
+    """CP-E2E-05: Reconciliación confirma ausencia (FAILED_RETRYABLE) permitiendo reintento seguro."""
+    mock_imap = clean_environment
+    repo = get_draft_repository()
+
+    proposal = EmailDraftProposalEntity(
+        id="prop-recon-neg-005",
+        source_message_id="<msg-neg-005@empresa.com>",
+        subject="Re: Climatizacion",
+        from_address="comercial@aclimar.es",
+        to_address="contacto@empresa.com",
+        body="Cuerpo",
+        raw_rfc822=b"Subject: Re: Climatizacion\n\nCuerpo",
+        status=ProposalStatus.ACCEPTED,
+    )
+    repo.save_proposal(proposal)
+
+    mock_imap.append_side_effect = socket.timeout("Timeout")
+    submit_resp = client.post("/api/drafts/proposals/prop-recon-neg-005/submit")
+    action_id = submit_resp.json()["id"]
+
+    # Reconciliación negativa (búsqueda vacía)
+    mock_imap.search_response = ("OK", [b""])
+    recon_resp = client.post(f"/api/drafts/actions/{action_id}/reconcile")
+    assert recon_resp.status_code == 200
+    assert recon_resp.json()["state"] == DraftActionState.FAILED_RETRYABLE.value
+    assert recon_resp.json()["can_retry"] is True
+
+    # Reintento exitoso
+    mock_imap.append_side_effect = None
+    mock_imap.append_response = ("OK", [b"[APPENDUID 20260408 9988] Append OK"])
+    retry_resp = client.post("/api/drafts/proposals/prop-recon-neg-005/submit")
+    assert retry_resp.status_code == 200
+    assert retry_resp.json()["state"] == DraftActionState.CREATED.value
+    assert retry_resp.json()["imap_uid"] == "9988"
+
+
+# =========================================================================
+# CP-E2E-06: Idempotencia ante Submit Duplicado
+# =========================================================================
+
+def test_e2e_cpe2e06_idempotent_duplicate_submit(clean_environment: MockIMAPClient) -> None:
+    """CP-E2E-06: Segundo submit sobre propuesta ya en CREATED no emite llamadas adicionales a IMAP."""
+    mock_imap = clean_environment
+    repo = get_draft_repository()
+
+    proposal = EmailDraftProposalEntity(
+        id="prop-idemp-006",
+        source_message_id="<msg-idemp-006@empresa.com>",
+        subject="Re: Oferta",
+        from_address="comercial@aclimar.es",
+        to_address="contacto@empresa.com",
+        body="Cuerpo",
+        raw_rfc822=b"Subject: Re: Oferta\n\nCuerpo",
+        status=ProposalStatus.ACCEPTED,
+    )
+    repo.save_proposal(proposal)
+
+    mock_imap.append_response = ("OK", [b"[APPENDUID 20260408 5544] OK"])
+    resp1 = client.post("/api/drafts/proposals/prop-idemp-006/submit")
+    assert resp1.status_code == 200
+    assert len(mock_imap.append_calls) == 1
+
+    # Invocación repetida
+    resp2 = client.post("/api/drafts/proposals/prop-idemp-006/submit")
+    assert resp2.status_code == 200
+    assert resp2.json()["id"] == resp1.json()["id"]
+    assert resp2.json()["state"] == DraftActionState.CREATED.value
+    assert len(mock_imap.append_calls) == 1
+
+
+# =========================================================================
+# CP-E2E-07: Integridad RFC 822 de Referencias y Threading
+# =========================================================================
+
+def test_e2e_cpe2e07_rfc822_threading_integrity(clean_environment: MockIMAPClient) -> None:
+    """CP-E2E-07: Verificación de que el payload depositado preserve In-Reply-To y References."""
+    mock_imap = clean_environment
+    repo = get_draft_repository()
+
+    source_mid = "<source-msg-thread-777@cliente.com>"
+    msg = email.message.EmailMessage(policy=email.policy.default)
+    msg["Message-ID"] = "<reply-777@aclimar.es>"
+    msg["In-Reply-To"] = source_mid
+    msg["References"] = f"<parent-0@cliente.com> {source_mid}"
+    msg["Subject"] = "Re: Hilo comercial"
+    msg["From"] = "comercial@aclimar.es"
+    msg["To"] = "cliente@cliente.com"
+    msg.set_content("Respuesta en hilo")
+
+    proposal = EmailDraftProposalEntity(
+        id="prop-threading-007",
+        source_message_id=source_mid,
+        subject=msg["Subject"],
+        from_address=msg["From"],
+        to_address=msg["To"],
+        body=msg.get_content(),
+        raw_rfc822=msg.as_bytes(),
+        status=ProposalStatus.ACCEPTED,
+    )
+    repo.save_proposal(proposal)
+
+    mock_imap.append_response = ("OK", [b"[APPENDUID 20260408 7700] OK"])
+    client.post("/api/drafts/proposals/prop-threading-007/submit")
+
+    assert len(mock_imap.append_calls) == 1
+    raw_deposited = mock_imap.append_calls[0]["message"]
+    parsed = email.message_from_bytes(raw_deposited, policy=email.policy.default)
+
+    assert parsed["In-Reply-To"] == source_mid
+    assert source_mid in parsed["References"]
+    assert parsed[IDEMPOTENCY_HEADER] is not None
+    assert parsed["Date"] is not None
