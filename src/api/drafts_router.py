@@ -1,14 +1,17 @@
 from __future__ import annotations
 
-from typing import Optional, List
+from datetime import datetime, timezone
+from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from src.domain.draft_action import DraftActionState, EmailDraftAction
 from src.repositories.draft_repository import DraftRepository
 from src.schemas.draft_schemas import (
     DraftActionRead,
+    DraftEditRequest,
     DraftProposalRead,
     DraftReviewRequest,
+    DraftRevisionRead,
     ProposalStatus,
     StatusVisualBadge,
     VisualBadgeColor,
@@ -105,8 +108,58 @@ def build_action_visual_badge(state: DraftActionState) -> StatusVisualBadge:
     )
 
 
+def compute_proposal_ui_actions(proposal, action: Optional[EmailDraftAction]) -> List[str]:
+    """Calcula deterministamente qué botones deben mostrarse en la UI de Lovable."""
+    actions: List[str] = []
+
+    # Si la propuesta aún no se ha revisado, se permiten Aceptar, Rechazar y Editar
+    if proposal.status == ProposalStatus.NOT_REVIEWED:
+        actions.extend(["accept", "reject", "edit"])
+    elif proposal.status == ProposalStatus.ACCEPTED:
+        # Si fue aceptada, se puede volver a editar (creando nueva versión) si no hay acción creada
+        if not action:
+            actions.extend(["submit_to_mailbox", "edit"])
+        elif action.state == DraftActionState.CREATED:
+            # Ya en buzón: no se permite volver a enviar ni editar la propuesta archivada
+            actions.append("view_mailbox_status")
+        elif action.state == DraftActionState.UNCERTAIN:
+            actions.append("reconcile")
+        elif action.state == DraftActionState.FAILED_RETRYABLE:
+            actions.extend(["submit_to_mailbox", "edit"])
+        elif action.state == DraftActionState.FAILED_TERMINAL:
+            actions.append("edit")
+    elif proposal.status == ProposalStatus.REJECTED:
+        # Propuesta rechazada: solo se permite editar para iniciar una nueva revisión
+        actions.append("edit")
+
+    return actions
+
+
+def compute_action_ui_actions(action: EmailDraftAction) -> List[str]:
+    actions: List[str] = []
+    if action.state == DraftActionState.UNCERTAIN:
+        actions.append("reconcile")
+    elif action.state == DraftActionState.FAILED_RETRYABLE:
+        actions.append("retry_submit")
+    elif action.state == DraftActionState.CREATED:
+        actions.append("ready_in_outlook")
+    return actions
+
+
 def _map_proposal_to_dto(proposal, action: Optional[EmailDraftAction]) -> DraftProposalRead:
     badge = build_proposal_visual_badge(proposal.status)
+    ui_actions = compute_proposal_ui_actions(proposal, action)
+    revisions_dto = [
+        DraftRevisionRead(
+            version=r.version,
+            subject=r.subject,
+            body=r.body,
+            author=r.author,
+            created_at=r.created_at,
+        )
+        for r in proposal.revisions
+    ]
+
     return DraftProposalRead(
         id=proposal.id,
         source_message_id=proposal.source_message_id,
@@ -115,15 +168,19 @@ def _map_proposal_to_dto(proposal, action: Optional[EmailDraftAction]) -> DraftP
         to_address=proposal.to_address,
         body=proposal.body,
         status=proposal.status,
+        current_version=proposal.current_version,
+        revisions=revisions_dto,
         created_at=proposal.created_at,
         current_action_id=action.id if action else None,
         current_action_state=action.state if action else None,
         visual_badge=badge,
+        allowed_ui_actions=ui_actions,
     )
 
 
 def _map_action_to_dto(action: EmailDraftAction) -> DraftActionRead:
     badge = build_action_visual_badge(action.state)
+    ui_actions = compute_action_ui_actions(action)
     return DraftActionRead(
         id=action.id,
         proposal_id=action.proposal_id,
@@ -138,6 +195,7 @@ def _map_action_to_dto(action: EmailDraftAction) -> DraftActionRead:
         is_uncertain=action.is_uncertain,
         is_terminal=action.is_terminal,
         visual_badge=badge,
+        allowed_ui_actions=ui_actions,
     )
 
 
@@ -160,7 +218,7 @@ def get_proposal(
     proposal_id: str,
     repo: DraftRepository = Depends(get_draft_repository),
 ) -> DraftProposalRead:
-    """Obtiene el detalle de una propuesta específica con su badge visual."""
+    """Obtiene el detalle de una propuesta específica con su badge visual y acciones permitidas."""
     proposal = repo.get_proposal(proposal_id)
     if not proposal:
         raise HTTPException(
@@ -195,12 +253,44 @@ def review_proposal(
         ProposalStatus.ACCEPTED if request.decision == "accepted" else ProposalStatus.REJECTED
     )
     proposal.reviewed_by = request.reviewer
-    from datetime import datetime, timezone
     proposal.reviewed_at = datetime.now(timezone.utc)
     repo.save_proposal(proposal)
 
     action = repo.get_action(proposal.current_action_id) if proposal.current_action_id else None
     return _map_proposal_to_dto(proposal, action)
+
+
+@router.post("/proposals/{proposal_id}/edit", response_model=DraftProposalRead)
+def edit_proposal_and_create_revision(
+    proposal_id: str,
+    request: DraftEditRequest,
+    repo: DraftRepository = Depends(get_draft_repository),
+) -> DraftProposalRead:
+    """Acción 'Editar': crea una nueva revisión append-only y regresa a estado not_reviewed."""
+    proposal = repo.get_proposal(proposal_id)
+    if not proposal:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Propuesta '{proposal_id}' no encontrada.",
+        )
+
+    action = repo.get_action(proposal.current_action_id) if proposal.current_action_id else None
+    if action and action.state == DraftActionState.CREATED:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No se puede editar una propuesta cuyo borrador ya fue creado en Outlook.",
+        )
+
+    proposal.add_revision(
+        subject=request.subject,
+        body=request.body,
+        author=request.editor,
+    )
+    # Si existía una acción no completada, se desacopla para la nueva revisión
+    proposal.current_action_id = None
+    repo.save_proposal(proposal)
+
+    return _map_proposal_to_dto(proposal, None)
 
 
 @router.post("/proposals/{proposal_id}/submit", response_model=DraftActionRead)
@@ -265,7 +355,7 @@ def get_action_status(
     action_id: str,
     repo: DraftRepository = Depends(get_draft_repository),
 ) -> DraftActionRead:
-    """Consulta el estado técnico de una acción de borrador con metadatos visuales."""
+    """Consulta el estado técnico de una acción de borrador con metadatos visuales y acciones permitidas."""
     action = repo.get_action(action_id)
     if not action:
         raise HTTPException(

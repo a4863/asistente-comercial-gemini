@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import enum
 from datetime import datetime
-from typing import Literal
+from typing import List, Literal, Optional
 from pydantic import BaseModel, Field
 
 from src.domain.draft_action import DraftActionState
@@ -31,6 +31,14 @@ class StatusVisualBadge(BaseModel):
     description: str
 
 
+class DraftRevisionRead(BaseModel):
+    version: int
+    subject: str
+    body: str
+    author: str
+    created_at: datetime
+
+
 class DraftProposalRead(BaseModel):
     id: str
     source_message_id: str
@@ -39,15 +47,27 @@ class DraftProposalRead(BaseModel):
     to_address: str
     body: str
     status: ProposalStatus
+    current_version: int = 1
+    revisions: List[DraftRevisionRead] = []
     created_at: datetime
     current_action_id: str | None = None
     current_action_state: DraftActionState | None = None
     visual_badge: StatusVisualBadge
+    allowed_ui_actions: List[str] = Field(
+        default_factory=list,
+        description="Lista de acciones autorizadas por el backend para renderizar botones en la UI.",
+    )
 
 
 class DraftReviewRequest(BaseModel):
     decision: Literal["accepted", "rejected"]
     reviewer: str = Field(..., min_length=1)
+
+
+class DraftEditRequest(BaseModel):
+    subject: str = Field(..., min_length=1, description="Nuevo asunto modificado por el comercial.")
+    body: str = Field(..., min_length=1, description="Nuevo cuerpo modificado por el comercial.")
+    editor: str = Field(..., min_length=1, description="Identificador del usuario que realiza la edición.")
 
 
 class DraftActionRead(BaseModel):
@@ -64,3 +84,7 @@ class DraftActionRead(BaseModel):
     is_uncertain: bool
     is_terminal: bool
     visual_badge: StatusVisualBadge
+    allowed_ui_actions: List[str] = Field(
+        default_factory=list,
+        description="Lista de acciones autorizadas por el backend para la acción IMAP.",
+    )

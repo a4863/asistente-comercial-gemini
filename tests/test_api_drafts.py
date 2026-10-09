@@ -66,11 +66,14 @@ def test_list_and_get_proposals() -> None:
     assert len(resp_filtered.json()) == 1
     assert resp_filtered.json()[0]["id"] == "prop-2"
 
-    # Obtener detalle
+    # Obtener detalle y comprobar allowed_ui_actions
     resp_detail = client.get("/api/drafts/proposals/prop-1")
     assert resp_detail.status_code == 200
     assert resp_detail.json()["id"] == "prop-1"
     assert resp_detail.json()["status"] == "not_reviewed"
+    assert "accept" in resp_detail.json()["allowed_ui_actions"]
+    assert "reject" in resp_detail.json()["allowed_ui_actions"]
+    assert "edit" in resp_detail.json()["allowed_ui_actions"]
 
 
 def test_review_proposal_workflow() -> None:
@@ -83,6 +86,7 @@ def test_review_proposal_workflow() -> None:
     )
     assert resp.status_code == 200
     assert resp.json()["status"] == "accepted"
+    assert "submit_to_mailbox" in resp.json()["allowed_ui_actions"]
 
     # Intento de re-revisión debe fallar con 400
     resp_dup = client.post(
@@ -90,6 +94,38 @@ def test_review_proposal_workflow() -> None:
         json={"decision": "rejected", "reviewer": "Alex Comercial"},
     )
     assert resp_dup.status_code == 400
+
+
+def test_edit_proposal_creates_new_revision_and_resets_review() -> None:
+    """Verifica que 'Editar' cree una nueva revisión append-only y regrese a not_reviewed."""
+    _create_sample_proposal("prop-edit-test", ProposalStatus.NOT_REVIEWED)
+
+    # El comercial edita la propuesta
+    resp_edit = client.post(
+        "/api/drafts/proposals/prop-edit-test/edit",
+        json={
+            "subject": "Oferta bomba de calor VRF con descuento 10%",
+            "body": "Adjunto presupuesto actualizado con descuento especial del 10%.",
+            "editor": "Alex Comercial",
+        },
+    )
+    assert resp_edit.status_code == 200
+    data = resp_edit.json()
+    assert data["current_version"] == 2
+    assert len(data["revisions"]) == 2
+    assert data["status"] == "not_reviewed"
+    assert data["subject"] == "Oferta bomba de calor VRF con descuento 10%"
+    assert data["revisions"][0]["version"] == 1
+    assert data["revisions"][1]["version"] == 2
+    assert data["revisions"][1]["author"] == "Alex Comercial"
+
+    # La propuesta puede aceptarse ahora con su nueva versión
+    resp_accept = client.post(
+        "/api/drafts/proposals/prop-edit-test/review",
+        json={"decision": "accepted", "reviewer": "Alex Comercial"},
+    )
+    assert resp_accept.status_code == 200
+    assert resp_accept.json()["status"] == "accepted"
 
 
 def test_submit_draft_action_requires_accepted_status(setup_test_environment) -> None:
@@ -138,6 +174,7 @@ def test_submit_draft_action_uncertain_and_reject_blind_retry(setup_test_environ
     data = resp.json()
     assert data["state"] == "uncertain"
     assert data["is_uncertain"] is True
+    assert "reconcile" in data["allowed_ui_actions"]
     action_id = data["id"]
 
     # Intento de submit repetido directo a ciegas debe retornar 409 Conflict
