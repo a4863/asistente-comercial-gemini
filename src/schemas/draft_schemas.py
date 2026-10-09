@@ -1,0 +1,47 @@
+from __future__ import annotations
+
+import enum
+from datetime import datetime
+from typing import Literal
+from pydantic import BaseModel, Field
+
+from src.domain.draft_action import DraftActionState
+
+
+class ProposalStatus(str, enum.Enum):
+    NOT_REVIEWED = "not_reviewed"
+    ACCEPTED = "accepted"
+    REJECTED = "rejected"
+
+
+class DraftProposalRead(BaseModel):
+    id: str
+    source_message_id: str
+    subject: str
+    from_address: str
+    to_address: str
+    body: str
+    status: ProposalStatus
+    created_at: datetime
+    current_action_id: str | None = None
+    current_action_state: DraftActionState | None = None
+
+
+class DraftReviewRequest(BaseModel):
+    decision: Literal["accepted", "rejected"]
+    reviewer: str = Field(..., min_length=1)
+
+
+class DraftActionRead(BaseModel):
+    id: str
+    proposal_id: str
+    state: DraftActionState
+    mailbox_folder: str
+    imap_uid: str | None = None
+    error_message: str | None = None
+    retry_count: int = 0
+    created_at: datetime
+    updated_at: datetime
+    can_retry: bool
+    is_uncertain: bool
+    is_terminal: bool
