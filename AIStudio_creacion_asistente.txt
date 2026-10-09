@@ -1,0 +1,45 @@
+ACLIMAR Assistant ha sido implementado respetando rigurosamente el Master File (MF) de arquitectura funcional y sus invariantes de seguridad:
+1. Núcleo Funcional y Filosofía de Control
+Supervisión Humana Estricta: La IA propone; el usuario revisa y autoriza. Ninguna acción externa sensible se ejecuta de manera autónoma.
+Regla Absoluta de Correo (Cero SMTP): El asistente no envía correos electrónicos. No existe protocolo SMTP ni botón de envío directo. Los borradores aprobados se compilan como snapshots inmutables RFC 2822 y se guardan exclusivamente mediante IMAP APPEND en la carpeta dedicada INBOX.Drafts.Borradores Asistente (Borradores Asistente), para su revisión y entrega final manual por el delegado desde Microsoft Outlook.
+Entorno Local Seguro: Ejecución concebida para 127.0.0.1 en Windows, con credenciales en Windows Keyring, base de datos local SQLite y cero exposición pública.
+2. Módulos y Flujos Implementados
+Cockpit Inicio (Dashboard):
+Panel de control de alta densidad para el delegado comercial B2B.
+Widgets operativos: correos y conversaciones pendientes de análisis, propuestas pendientes de revisión humana, agenda/planificación del día y métricas de borradores.
+Banner de alertas para acciones pendientes de materialización, eventos de calendario preparados esperando aprobación y acciones en estado uncertain que requieren reconciliación.
+Correo y Análisis IA:
+Listado con filtros por carpeta (INBOX, Sent), estado de análisis, cliente y búsqueda.
+Detalle de correo con visualización del cuerpo y cabeceras RFC 2822 (Message-ID desplegable para inspección técnica).
+Bloques estructurados de extracción de IA: Resumen Ejecutivo, Preguntas Clave, Compromisos Comerciales con Plazos (deudor y acreedor), Tareas Propuestas y Siguientes Pasos.
+Acciones de revisión humana por versión: Aceptar, Rechazar o Editar.
+Tareas y Siguientes Pasos:
+Máquina de estados: proposed 
+ pending / planned 
+ completed.
+Cumplimiento de la regla: una propuesta aceptada no se convierte en operativa hasta su materialización explícita por el usuario.
+Calendario (Google Calendar — "Alex Google"):
+Transición controlada: Siguiente paso aceptado 
+ planned 
+ generación de snapshot inmutable RFC 5545 
+ revisión 
+ autorización expresa de creación.
+Estados: prepared, submitting, created, uncertain. Prevención de citas duplicadas ante timeouts de red.
+Flujo de Borradores de Correo (Módulo Crítico):
+Ciclo formal: EmailDraftProposal 
+ historial de revisiones append-only (EmailDraftRevision v1, v2...) 
+ revisión humana (EmailDraftReview) 
+ preparación de EmailDraftAction.
+Snapshot inmutable con cabeceras deterministas (asunto con regla estricta de prefijo único Re:, In-Reply-To, References plegadas según RFC 2822 sin romper identificadores, Date, Message-ID y payload_digest SHA-256).
+Gestión de Estados Inciertos (uncertain): Prohibición de reintento automático de APPEND; botón de Reconcile en modo solo lectura.
+Invalidación y Reemplazo: Estados terminales invalidated que preservan el snapshot anterior y permiten ejecutar Prepare Replacement, enlazando replaces_action_id.
+Notas Comerciales & WhatsApp (MVP):
+Registro rápido de llamadas, visitas de obra y acuerdos comerciales.
+Pegado y estructuración de conversaciones de WhatsApp con extracción de compromisos.
+CRM Local ACLIMAR:
+Vista de expedientes de obra, ofertas y clientes.
+Garantía de arquitectura: integración exclusiva mediante API REST (cero escrituras directas a la base de datos del CRM).
+Auditoría & Trazabilidad:
+Registro inmutable de eventos con timestamp, actor, tipo (analysis_completed, proposal_reviewed, task_materialized, calendar_action_created, draft_append_created, draft_action_invalidated, etc.), resultado y procedencia.
+Configuración del Sistema:
+Parámetros del buzón IMAP (imap.aclimar.es:993 TLS), carpeta INBOX.Drafts.Borradores Asistente, motor Gemini 3.8 Flash, calendario Alex Google y estado del bind 127.0.0.1.
