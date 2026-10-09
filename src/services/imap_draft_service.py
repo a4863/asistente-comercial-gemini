@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import email
 import email.policy
+import email.utils
 import imaplib
 import re
 import socket
+from datetime import datetime, timezone
 from typing import Any, Protocol
 
 from src.domain.draft_action import DraftActionState, EmailDraftAction
@@ -12,6 +14,12 @@ from src.domain.draft_action import DraftActionState, EmailDraftAction
 DRAFTS_FOLDER_TARGET = "INBOX.Drafts.Borradores Asistente"
 IDEMPOTENCY_HEADER = "X-Assistant-Draft-Id"
 APPENDUID_PATTERN = re.compile(r"\[APPENDUID\s+(\d+)\s+(\d+)\]", re.IGNORECASE)
+
+
+def format_mailbox_for_command(folder: str) -> str:
+    """Formatea y entrecomilla el nombre de la carpeta para comandos IMAP con espacios."""
+    sanitized = folder.strip('"')
+    return f'"{sanitized}"'
 
 
 class IMAPClientProtocol(Protocol):
@@ -29,16 +37,23 @@ class IMAPClientProtocol(Protocol):
 
 
 class ImapDraftAppender:
-    """Servicio para ejecutar IMAP APPEND idempotente a la carpeta de borradores."""
+    """Servicio para ejecutar IMAP APPEND idempotente a la carpeta de borradores.
+
+    Invariante: Cero SMTP. Solo interacción local/IMAP en modo append y búsqueda de reconciliación.
+    """
 
     def __init__(self, target_folder: str = DRAFTS_FOLDER_TARGET) -> None:
         self.target_folder = target_folder
 
     def prepare_payload_with_idempotency(self, action: EmailDraftAction) -> bytes:
-        """Asegura que el payload RFC 822 contenga la cabecera X-Assistant-Draft-Id."""
+        """Asegura que el payload RFC 822 contenga la cabecera X-Assistant-Draft-Id y Date."""
         msg = email.message_from_bytes(action.rfc822_payload, policy=email.policy.default)
         if IDEMPOTENCY_HEADER not in msg:
             msg[IDEMPOTENCY_HEADER] = action.idempotency_token
+
+        if "Date" not in msg:
+            msg["Date"] = email.utils.format_datetime(datetime.now(timezone.utc))
+
         return msg.as_bytes()
 
     def append_draft(
@@ -56,12 +71,15 @@ class ImapDraftAppender:
             action.transition_to(DraftActionState.SUBMITTING)
 
         prepared_payload = self.prepare_payload_with_idempotency(action)
+        folder_cmd = format_mailbox_for_command(self.target_folder)
 
         try:
+            # Flags obligatorios: \Draft (RFC 3501)
+            # En imaplib se pasa como cadena delimitada por paréntesis
             status, responses = imap_client.append(
-                self.target_folder,
+                folder_cmd,
                 r"(\Draft)",
-                None,
+                imaplib.Time2Internaldate(datetime.now(timezone.utc).timestamp()),
                 prepared_payload,
             )
 
@@ -112,12 +130,14 @@ class ImapDraftAppender:
         if action.state != DraftActionState.UNCERTAIN:
             return action
 
+        folder_cmd = format_mailbox_for_command(self.target_folder)
+
         try:
-            status, _ = imap_client.select(self.target_folder, readonly=True)
+            status, _ = imap_client.select(folder_cmd, readonly=True)
             if status != "OK":
                 return action
 
-            search_criteria = f'HEADER "{IDEMPOTENCY_HEADER}" "{action.idempotency_token}"'
+            search_criteria = f'HEADER {IDEMPOTENCY_HEADER} "{action.idempotency_token}"'
             search_status, search_data = imap_client.search(None, search_criteria)
 
             if search_status == "OK" and search_data and search_data[0].strip():
