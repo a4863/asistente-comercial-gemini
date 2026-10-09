@@ -52,6 +52,24 @@ class EmailDraftAction:
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     updated_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
+    def __post_init__(self) -> None:
+        if not self.proposal_id or not self.proposal_id.strip():
+            raise ValueError("proposal_id no puede estar vacío.")
+        if not isinstance(self.rfc822_payload, bytes) or len(self.rfc822_payload) == 0:
+            raise ValueError("rfc822_payload debe ser una secuencia de bytes no vacía.")
+
+    @property
+    def is_terminal(self) -> bool:
+        return self.state in (DraftActionState.CREATED, DraftActionState.FAILED_TERMINAL)
+
+    @property
+    def is_uncertain(self) -> bool:
+        return self.state == DraftActionState.UNCERTAIN
+
+    @property
+    def can_retry(self) -> bool:
+        return self.state == DraftActionState.FAILED_RETRYABLE
+
     def transition_to(
         self,
         new_state: DraftActionState,
@@ -73,6 +91,8 @@ class EmailDraftAction:
 
         if error_message is not None:
             self.error_message = error_message
+        elif new_state == DraftActionState.CREATED:
+            self.error_message = None
 
         if new_state == DraftActionState.SUBMITTING:
             self.retry_count += 1
